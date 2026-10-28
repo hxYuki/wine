@@ -228,6 +228,25 @@ static int XRandRErrorHandler(Display *dpy, XErrorEvent *event, void *arg)
     return 1;
 }
 
+/* An output can disappear after the screen resources snapshot was obtained. */
+static XRROutputInfo *xrandr_get_output_info( Display *display, XRRScreenResources *resources,
+                                            RROutput output )
+{
+    XRROutputInfo *info;
+    int error;
+
+    X11DRV_expect_error( display, XRandRErrorHandler, NULL );
+    info = pXRRGetOutputInfo( display, resources, output );
+    error = X11DRV_check_error();
+    if (error)
+    {
+        if (info) pXRRFreeOutputInfo( info );
+        WARN( "Output %#lx disappeared during query, ignoring stale snapshot.\n", output );
+        return NULL;
+    }
+    return info;
+}
+
 /* XRandR 1.0 display settings handler */
 static BOOL xrandr10_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_settings_id *id )
 {
@@ -452,7 +471,7 @@ static BOOL is_broken_driver(void)
     /* Check if any output only has one native mode */
     for (output_idx = 0; output_idx < screen_resources->noutput; ++output_idx)
     {
-        output_info = pXRRGetOutputInfo( gdi_display, screen_resources,
+        output_info = xrandr_get_output_info( gdi_display, screen_resources,
                                          screen_resources->outputs[output_idx] );
         if (!output_info)
             continue;
@@ -637,7 +656,7 @@ static RECT get_primary_rect( XRRScreenResources *resources )
     if (!primary_output)
         goto fallback;
 
-    output_info = pXRRGetOutputInfo( gdi_display, resources, primary_output );
+    output_info = xrandr_get_output_info( gdi_display, resources, primary_output );
     if (!output_info || output_info->connection != RR_Connected || !output_info->crtc)
         goto fallback;
 
@@ -951,7 +970,7 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
     primary_rect = get_primary_rect( screen_resources );
     for (i = 0; i < output_count; ++i)
     {
-        output_info = pXRRGetOutputInfo( gdi_display, screen_resources, outputs[i] );
+        output_info = xrandr_get_output_info( gdi_display, screen_resources, outputs[i] );
         if (!output_info)
             goto done;
 
@@ -981,7 +1000,7 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
         {
             for (j = 0; j < screen_resources->noutput; ++j)
             {
-                enum_output_info = pXRRGetOutputInfo( gdi_display, screen_resources, screen_resources->outputs[j] );
+                enum_output_info = xrandr_get_output_info( gdi_display, screen_resources, screen_resources->outputs[j] );
                 if (!enum_output_info)
                     continue;
 
@@ -1092,7 +1111,7 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
     if (!monitors)
         goto done;
 
-    output_info = pXRRGetOutputInfo( gdi_display, screen_resources, adapter_id );
+    output_info = xrandr_get_output_info( gdi_display, screen_resources, adapter_id );
     if (!output_info)
         goto done;
 
@@ -1116,7 +1135,7 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
 
         for (i = 0; i < screen_resources->noutput; ++i)
         {
-            enum_output_info = pXRRGetOutputInfo( gdi_display, screen_resources, screen_resources->outputs[i] );
+            enum_output_info = xrandr_get_output_info( gdi_display, screen_resources, screen_resources->outputs[i] );
             if (!enum_output_info)
                 goto done;
 
@@ -1366,7 +1385,7 @@ static BOOL xrandr14_get_modes( x11drv_settings_id id, DWORD flags, struct x11dr
     if (!screen_resources)
         goto done;
 
-    output_info = pXRRGetOutputInfo( gdi_display, screen_resources, output );
+    output_info = xrandr_get_output_info( gdi_display, screen_resources, output );
     if (!output_info)
         goto done;
 
@@ -1483,7 +1502,7 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
     if (!screen_resources)
         goto done;
 
-    output_info = pXRRGetOutputInfo( gdi_display, screen_resources, output );
+    output_info = xrandr_get_output_info( gdi_display, screen_resources, output );
     if (!output_info)
         goto done;
 
@@ -1580,7 +1599,7 @@ static LONG xrandr14_set_current_mode( x11drv_settings_id id, const struct x11dr
     if (!screen_resources)
         return ret;
 
-    output_info = pXRRGetOutputInfo( gdi_display, screen_resources, output );
+    output_info = xrandr_get_output_info( gdi_display, screen_resources, output );
     if (!output_info || output_info->connection != RR_Connected)
         goto done;
 
@@ -1707,7 +1726,7 @@ void X11DRV_XRandR_Init(void)
 
         for (i = 0; i < screen_resources->noutput; ++i)
         {
-            output_info = pXRRGetOutputInfo( gdi_display, screen_resources, screen_resources->outputs[i] );
+            output_info = xrandr_get_output_info( gdi_display, screen_resources, screen_resources->outputs[i] );
             if (!output_info)
                 continue;
 
