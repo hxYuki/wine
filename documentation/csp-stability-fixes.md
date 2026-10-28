@@ -42,9 +42,11 @@ obtaining screen resources and calling `XRRGetOutputInfo()`. An unhandled
 process also destroys its shared X11 resources, including the cursor-clipping
 window cached by other applications.
 
-Output-info calls now use Wine's existing expected-error mechanism. If the
-request fails, the helper returns `NULL` to the existing failure paths.
-RandR support and monitor enumeration remain enabled.
+Output, CRTC, and provider information calls now use Wine's existing
+expected-error mechanism. Failed information queries return `NULL` to the
+existing failure paths. EDID property queries also trap stale-output errors
+and return an empty property. RandR support and monitor enumeration remain
+enabled.
 
 Validation used a separate Xvfb display and a test-only dynamic-linker audit
 library that replaced the first output ID passed to `XRRGetOutputInfo()` with
@@ -86,3 +88,31 @@ also confirmed.
 This is acceptance for the tested Wine 11.4 session and switching sequence.
 A fresh login and extended use were not covered. The original core lacked
 sufficient history to establish the complete incident chain.
+
+## Follow-up: cover the remaining RandR snapshot queries
+
+The first version only guarded `XRRGetOutputInfo()`. A later real-session log
+showed explorer exiting with `BadRRCrtc / RRGetCrtcInfo` during another display
+transition. Later, closing CSP left a windowless CSP process waiting through
+Boost thread synchronization, preventing a normal reopen. The available stack
+does not establish that the CRTC error alone caused that shutdown wait.
+
+The follow-up adds traps to all 12 CRTC-info calls, both provider-info calls,
+and the EDID output-property request. Resource-query helpers are guarded by
+`HAVE_XRRGETPROVIDERRESOURCES`, matching their function-pointer declarations.
+A syntax-only build with that feature disabled passed as well.
+
+Additional separate-Xvfb fault cases were tested against the first and updated
+X11 modules:
+
+| Query | First module | Updated module |
+| --- | --- | --- |
+| `XRRGetCrtcInfo` | fatal `BadRRCrtc`, client exit 2 | two launches returned 0, 828 / 842 focus and clipping cycles |
+| `XRRGetOutputProperty` | fatal `BadRROutput`, client exit 2 | two launches returned 0, 835 / 841 cycles |
+| `XRRGetProviderInfo` | fatal `BadRRProvider`, client exit 2 | two launches returned 0, 836 / 842 cycles |
+
+The provider case injected one invalid provider into an otherwise empty Xvfb
+provider snapshot. Test display servers were managed by the test process, and
+all fault injection remained outside production modules. These tests cover the
+query errors and normal test-client reopen; real CSP close/reopen is a separate
+acceptance step.

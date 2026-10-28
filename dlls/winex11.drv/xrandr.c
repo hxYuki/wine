@@ -228,7 +228,9 @@ static int XRandRErrorHandler(Display *dpy, XErrorEvent *event, void *arg)
     return 1;
 }
 
-/* An output can disappear after the screen resources snapshot was obtained. */
+#ifdef HAVE_XRRGETPROVIDERRESOURCES
+
+/* Resources can disappear after the screen resources snapshot was obtained. */
 static XRROutputInfo *xrandr_get_output_info( Display *display, XRRScreenResources *resources,
                                             RROutput output )
 {
@@ -246,6 +248,44 @@ static XRROutputInfo *xrandr_get_output_info( Display *display, XRRScreenResourc
     }
     return info;
 }
+
+static XRRCrtcInfo *xrandr_get_crtc_info( Display *display, XRRScreenResources *resources,
+                                        RRCrtc crtc )
+{
+    XRRCrtcInfo *info;
+    int error;
+
+    X11DRV_expect_error( display, XRandRErrorHandler, NULL );
+    info = pXRRGetCrtcInfo( display, resources, crtc );
+    error = X11DRV_check_error();
+    if (error)
+    {
+        if (info) pXRRFreeCrtcInfo( info );
+        WARN( "Crtc %#lx disappeared during query, ignoring stale snapshot.\n", crtc );
+        return NULL;
+    }
+    return info;
+}
+
+static XRRProviderInfo *xrandr_get_provider_info( Display *display, XRRScreenResources *resources,
+                                                RRProvider provider )
+{
+    XRRProviderInfo *info;
+    int error;
+
+    X11DRV_expect_error( display, XRandRErrorHandler, NULL );
+    info = pXRRGetProviderInfo( display, resources, provider );
+    error = X11DRV_check_error();
+    if (error)
+    {
+        if (info) pXRRFreeProviderInfo( info );
+        WARN( "Provider %#lx disappeared during query, ignoring stale snapshot.\n", provider );
+        return NULL;
+    }
+    return info;
+}
+
+#endif
 
 /* XRandR 1.0 display settings handler */
 static BOOL xrandr10_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_settings_id *id )
@@ -537,7 +577,7 @@ static void get_screen_size( XRRScreenResources *resources, unsigned int *width,
 
     for (i = 0; i < resources->ncrtc; ++i)
     {
-        if (!(crtc_info = pXRRGetCrtcInfo( gdi_display, resources, resources->crtcs[i] )))
+        if (!(crtc_info = xrandr_get_crtc_info( gdi_display, resources, resources->crtcs[i] )))
             continue;
 
         if (crtc_info->mode != None)
@@ -552,17 +592,21 @@ static void get_screen_size( XRRScreenResources *resources, unsigned int *width,
 
 static unsigned int get_edid( RROutput output, unsigned char **prop )
 {
-    int result, actual_format;
+    int result, actual_format, error;
     unsigned long bytes_after, len;
     Atom actual_type;
 
+    *prop = NULL;
+    X11DRV_expect_error( gdi_display, XRandRErrorHandler, NULL );
     result = pXRRGetOutputProperty( gdi_display, output, x11drv_atom(EDID), 0, 128, FALSE, FALSE,
                                     AnyPropertyType, &actual_type, &actual_format, &len,
                                     &bytes_after, prop );
+    error = X11DRV_check_error();
 
-    if (result != Success)
+    if (error || result != Success)
     {
         WARN("Could not retrieve EDID property for output %#lx.\n", output);
+        if (*prop) XFree( *prop );
         *prop = NULL;
         return 0;
     }
@@ -626,7 +670,7 @@ static RRCrtc get_output_free_crtc( XRRScreenResources *resources, XRROutputInfo
 
     for (crtc_idx = 0; crtc_idx < output_info->ncrtc; ++crtc_idx)
     {
-        crtc_info = pXRRGetCrtcInfo( gdi_display, resources, output_info->crtcs[crtc_idx] );
+        crtc_info = xrandr_get_crtc_info( gdi_display, resources, output_info->crtcs[crtc_idx] );
         if (!crtc_info)
             continue;
 
@@ -660,7 +704,7 @@ static RECT get_primary_rect( XRRScreenResources *resources )
     if (!output_info || output_info->connection != RR_Connected || !output_info->crtc)
         goto fallback;
 
-    crtc_info = pXRRGetCrtcInfo( gdi_display, resources, output_info->crtc );
+    crtc_info = xrandr_get_crtc_info( gdi_display, resources, output_info->crtc );
     if (!crtc_info || !crtc_info->mode)
         goto fallback;
 
@@ -681,7 +725,7 @@ fallback:
     WARN("Primary is set to a disconnected XRandR output.\n");
     for (i = 0; i < resources->ncrtc; ++i)
     {
-        crtc_info = pXRRGetCrtcInfo( gdi_display, resources, resources->crtcs[i] );
+        crtc_info = xrandr_get_crtc_info( gdi_display, resources, resources->crtcs[i] );
         if (!crtc_info)
             continue;
 
@@ -863,14 +907,14 @@ static BOOL xrandr14_get_gpus( struct x11drv_gpu **new_gpus, int *count, BOOL ge
     primary_rect = get_primary_rect( screen_resources );
     for (i = 0; i < provider_resources->nproviders; ++i)
     {
-        provider_info = pXRRGetProviderInfo( gdi_display, screen_resources, provider_resources->providers[i] );
+        provider_info = xrandr_get_provider_info( gdi_display, screen_resources, provider_resources->providers[i] );
         if (!provider_info)
             goto done;
 
         /* Find primary provider */
         for (j = 0; primary_provider == -1 && j < provider_info->ncrtcs; ++j)
         {
-            crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, provider_info->crtcs[j] );
+            crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, provider_info->crtcs[j] );
             if (!crtc_info)
                 continue;
 
@@ -946,7 +990,7 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
 
     if (gpu_id)
     {
-        provider_info = pXRRGetProviderInfo( gdi_display, screen_resources, gpu_id );
+        provider_info = xrandr_get_provider_info( gdi_display, screen_resources, gpu_id );
         if (!provider_info)
             goto done;
 
@@ -986,7 +1030,7 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
         detached = FALSE;
         if (output_info->crtc)
         {
-            crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
+            crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, output_info->crtc );
             if (!crtc_info)
                 goto done;
         }
@@ -1010,7 +1054,7 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
                     continue;
                 }
 
-                enum_crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, enum_output_info->crtc );
+                enum_crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, enum_output_info->crtc );
                 pXRRFreeOutputInfo( enum_output_info );
                 if (!enum_crtc_info)
                     continue;
@@ -1117,7 +1161,7 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
 
     if (output_info->crtc)
     {
-        crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
+        crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, output_info->crtc );
         if (!crtc_info)
             goto done;
     }
@@ -1159,7 +1203,7 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
 
             if (enum_output_info->crtc)
             {
-                enum_crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, enum_output_info->crtc );
+                enum_crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, enum_output_info->crtc );
                 if (!enum_crtc_info)
                     goto done;
 
@@ -1401,7 +1445,7 @@ static BOOL xrandr14_get_modes( x11drv_settings_id id, DWORD flags, struct x11dr
     if (!crtc)
         crtc = get_output_free_crtc( screen_resources, output_info );
     if (crtc)
-        crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, crtc );
+        crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, crtc );
 
     /* If the output is connected to a CRTC, use rotations reported by the CRTC */
     if (crtc_info)
@@ -1508,7 +1552,7 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
 
     if (output_info->crtc)
     {
-        crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
+        crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, output_info->crtc );
         if (!crtc_info)
             goto done;
     }
@@ -1636,7 +1680,7 @@ static LONG xrandr14_set_current_mode( x11drv_settings_id id, const struct x11dr
             goto done;
     }
 
-    crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, crtc );
+    crtc_info = xrandr_get_crtc_info( gdi_display, screen_resources, crtc );
     if (!crtc_info)
         goto done;
 
