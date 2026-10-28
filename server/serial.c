@@ -194,8 +194,9 @@ static void async_wait_timeout( void *private )
 {
     struct wait_req *req = private;
 
-    async_wake_up( &req->serial->wait_q, STATUS_ALERTED );
+    /* Waking an exiting client may synchronously complete and free req. */
     req->timeout = add_timeout_user( WAIT_ON_MASK_POLL_INTERVAL, async_wait_timeout, req );
+    async_wake_up( &req->serial->wait_q, STATUS_ALERTED );
 }
 
 static void serial_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
