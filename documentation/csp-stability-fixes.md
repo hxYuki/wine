@@ -116,3 +116,10 @@ provider snapshot. Test display servers were managed by the test process, and
 all fault injection remained outside production modules. These tests cover the
 query errors and normal test-client reopen; real CSP close/reopen is a separate
 acceptance step.
+
+After installing the updated X11 module and rebuilding only the dedicated
+painting Wine session, the real CSP main window responded to `WM_NULL`. The
+user then performed the previously failing sequence on a blank canvas:
+normal exit, followed by launching CSP again from its usual icon. The reported
+result was that CSP exited and reopened normally. The CSP Unix process changed
+from 274050 to 276372 while explorer 274064 and wineserver 273866 remained alive.
